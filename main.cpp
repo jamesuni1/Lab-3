@@ -3,50 +3,22 @@
 #include "mbed.h"
 #include "arm_book_lib.h"
 
-//=====[Declaration and initialization of public global objects]===============
-
-DigitalIn enterButton(BUTTON1);
 DigitalIn gasDetector(D2);
 DigitalIn overTempDetector(D3);
-DigitalIn aButton(D4);
-DigitalIn bButton(D5);
-DigitalIn cButton(D6);
-DigitalIn dButton(D7);
+
 
 DigitalOut alarmLed(LED1);
-DigitalOut incorrectCodeLed(LED3);
-DigitalOut systemBlockedLed(LED2);
+DigitalOut monitoringLed(LED3);
+DigitalOut dataStateLed(LED2);
 
 UnbufferedSerial uartUsb(USBTX, USBRX, 115200);
 
 //=====[Declaration and initialization of public global variables]=============
 
-bool alarmState = OFF;
-int numberOfIncorrectCodes = 0;
-
-//=====[Declarations (prototypes) of public functions]=========================
-
-void inputsInit();
-void outputsInit();
-
-void alarmActivationUpdate();
-void alarmDeactivationUpdate();
-
-void uartTask();
-void availableCommands();
-
-//=====[Main function, the program entry point after power on or reset]========
-
-int main()
-{
-    inputsInit();
-    outputsInit();
-    while (true) {
-        alarmActivationUpdate();
-        alarmDeactivationUpdate();
-        uartTask();
-    }
-}
+bool gasAlarmState = OFF;
+bool tempAlarmState = OFF;
+bool monitoringMode = OFF;
+int monitoringTimer = 0;
 
 //=====[Implementations of public functions]===================================
 
@@ -54,45 +26,55 @@ void inputsInit()
 {
     gasDetector.mode(PullDown);
     overTempDetector.mode(PullDown);
-    aButton.mode(PullDown);
-    bButton.mode(PullDown);
-    cButton.mode(PullDown);
-    dButton.mode(PullDown);
 }
 
-void outputsInit()
+
+void alarmStateUpdate()
 {
+    if ( gasAlarmState || tempAlarmState ) {
+        alarmLed = ON;
+    } else{
     alarmLed = OFF;
-    incorrectCodeLed = OFF;
-    systemBlockedLed = OFF;
+    }
+    monitoringLed = monitoringMode;
 }
 
-void alarmActivationUpdate()
-{
-    if ( gasDetector || overTempDetector ) {
-        alarmState = ON;
-    }
-    alarmLed = alarmState;
+void sendDataState() {
+    dataStateLed = ON;
+
+    if (gasAlarmState) uartUsb.write("GAS ALARM ACTIVE\r\n", 18);
+    else uartUsb.write("GAS ALARM OFF\r\n", 15);
+
+    if (tempAlarmState) uartUsb.write("TEMP ALARM ACTIVE\r\n", 19);
+    else uartUsb.write("TEMP ALARM OFF\r\n", 16);
+
+    thread_sleep_for(100);
+    dataStateLed = OFF;
 }
 
-void alarmDeactivationUpdate()
-{
-    if ( numberOfIncorrectCodes < 5 ) {
-        if ( aButton && bButton && cButton && dButton && !enterButton ) {
-            incorrectCodeLed = OFF;
-        }
-        if ( enterButton && !incorrectCodeLed && alarmState ) {
-            if ( aButton && bButton && !cButton && !dButton ) {
-                alarmState = OFF;
-                numberOfIncorrectCodes = 0;
-            } else {
-                incorrectCodeLed = ON;
-                numberOfIncorrectCodes = numberOfIncorrectCodes + 1;
-            }
-        }
-    } else {
-        systemBlockedLed = ON;
+void checkButtons() {
+    if (gasDetector && !gasAlarmState) {
+        gasAlarmState = ON;
+        uartUsb.write("WARNING: GAS DETECTED\r\n", 23);
+        alarmStateUpdate();
     }
+
+    if (overTempDetector && !tempAlarmState) {
+        tempAlarmState = ON;
+        uartUsb.write("WARNING: TEMPERATURE TOO HIGH\r\n", 31);
+        alarmStateUpdate();
+    }
+}
+
+void availableCommands()
+{
+    uartUsb.write( "Available commands:\r\n", 21 );
+    uartUsb.write( "Press '1' to toggle gas alarm simulation\r\n\r\n", 44 );
+    uartUsb.write( "Press '2' to get the gas alarm state\r\n\r\n", 40 );
+    uartUsb.write( "Press '3' to get the temp alarm state\r\n\r\n", 41 );
+    uartUsb.write( "Press '4' to toggle the temp alarm simulation\r\n\r\n", 49 );
+    uartUsb.write( "Press '5' to reset the alarms\r\n\r\n", 33 );
+    uartUsb.write( "Press '6' to toggle the monitoring\r\n\r\n", 38 );
 }
 
 void uartTask()
@@ -100,20 +82,68 @@ void uartTask()
     char receivedChar = '\0';
     if( uartUsb.readable() ) {
         uartUsb.read( &receivedChar, 1 );
-        if ( receivedChar == '1') {
-            if ( alarmState ) {
-                uartUsb.write( "The alarm is activated\r\n", 24);
-            } else {
-                uartUsb.write( "The alarm is not activated\r\n", 28);
-            }
-        } else {
-            availableCommands();
+
+        switch(receivedChar) {
+            case '1': // ON / OFF Gas Alarm Simulation
+                gasAlarmState = !gasAlarmState;
+                if (gasAlarmState) uartUsb.write("WARNING: GAS DETECTED\r\n", 23);
+                break;
+
+            case '2': // Request Gas State
+                if (gasAlarmState) uartUsb.write("GAS ALARM ACTIVE\r\n", 18);
+                else uartUsb.write("GAS ALARM CLEAR\r\n", 17);
+                break;
+
+            case '3': // Request Temp State
+                if (tempAlarmState) uartUsb.write("TEMP ALARM ACTIVE\r\n", 19);
+                else uartUsb.write("TEMP ALARM CLEAR\r\n", 18);
+                break;
+
+            case '4': // ON / OFF Temp Alarm Simulation
+                tempAlarmState = !tempAlarmState;
+                if (tempAlarmState) uartUsb.write("WARNING: TEMPERATURE TOO HIGH\r\n", 31);
+                break;
+
+            case '5': // Reset Alarms
+                gasAlarmState = false;
+                tempAlarmState = false;
+                uartUsb.write("ALARMS RESET\r\n", 14);
+                break;
+
+            case '6': // On / OFF Monitoring
+                monitoringMode = !monitoringMode;
+                if (monitoringMode) uartUsb.write("Monitoring Mode: ON\r\n", 21);
+                else uartUsb.write("Monitoring Mode: OFF\r\n", 22);
+                break;
+            default:
+                availableCommands();
+                break;
+
         }
+        alarmStateUpdate();
     }
 }
 
-void availableCommands()
+
+int main()
 {
-    uartUsb.write( "Available commands:\r\n", 21 );
-    uartUsb.write( "Press '1' to get the alarm state\r\n\r\n", 36 );
+    inputsInit();
+
+    alarmLed = OFF;
+    monitoringLed = OFF;
+    dataStateLed = OFF;
+
+    while (true) {
+        checkButtons();
+
+        uartTask();
+        if (monitoringMode) {
+            monitoringTimer++;
+            if (monitoringTimer >= 200) { // 2 seconds (200 * 10ms)
+                sendDataState();
+                monitoringTimer = 0;
+            }
+        }
+        thread_sleep_for(10);
+    }
 }
